@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Qwen 1M Context QA</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'IBM Plex Mono', 'Courier New', monospace;
+            background: #fffaf5;
+            color: #1e293b;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        .info {
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 30px;
+        }
+        #query {
+            width: 100%;
+            padding: 12px;
+            font-family: inherit;
+            font-size: 14px;
+            border: 2px solid #d4a574;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        button {
+            background: #0B64DD;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-family: inherit;
+            font-size: 14px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #094fa8;
+        }
+        button:disabled {
+            background: #94a3b8;
+            cursor: not-allowed;
+        }
+        #status {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 10px;
+        }
+        #result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #fff8f0;
+            border: 1px solid #d4a574;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            min-height: 100px;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Qwen 1M Context QA</h1>
+        <div class="info">
+            Qwen3.5-35B-A3B on L4 24GB with 1M token context window<br>
+            Powered by TurboQuant extreme KV cache quantization
+        </div>
+        
+        <input type="text" id="query" placeholder="Ask a question about the Jina papers...">
+        <button id="submit">Submit</button>
+        <div id="status"></div>
+        <div id="result" class="hidden"></div>
+    </div>
+    
+    <script>
+        const query = document.getElementById('query');
+        const submit = document.getElementById('submit');
+        const status = document.getElementById('status');
+        const result = document.getElementById('result');
+        
+        submit.onclick = async () => {
+            const q = query.value.trim();
+            if (!q) return;
+            
+            submit.disabled = true;
+            status.textContent = 'Querying... (this may take a while)';
+            result.className = 'hidden';
+            
+            try {
+                const resp = await fetch('http://localhost:8082/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'qwen',
+                        messages: [{ role: 'user', content: q }],
+                        max_tokens: 500,
+                        temperature: 0
+                    })
+                });
+                
+                const data = await resp.json();
+                const answer = data.choices[0].message.content;
+                const promptTokens = data.usage.prompt_tokens;
+                const prefillMs = data.timings.prompt_ms;
+                
+                result.textContent = answer;
+                result.className = '';
+                status.textContent = `Prompt: ${promptTokens.toLocaleString()} tokens | Prefill: ${(prefillMs/1000).toFixed(1)}s`;
+            } catch (err) {
+                result.textContent = 'Error: ' + err.message;
+                result.className = '';
+                status.textContent = '';
+            } finally {
+                submit.disabled = false;
+            }
+        };
+        
+        query.onkeypress = (e) => {
+            if (e.key === 'Enter') submit.click();
+        };
+    </script>
+</body>
+</html>
