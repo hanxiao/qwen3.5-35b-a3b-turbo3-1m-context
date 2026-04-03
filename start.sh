@@ -1,31 +1,28 @@
 #!/bin/bash
 set -e
 
-export LD_LIBRARY_PATH=/opt/llama-turbo/build/bin:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/opt/llama.cpp/build/bin:$LD_LIBRARY_PATH
 
 # Start llama-server
-/opt/llama-turbo/build/bin/llama-server \
-  -m /opt/models/Qwen3.5-35B-A3B-Q3_K_M.gguf \
-  -c 1048576 \
-  -ngl 99 \
-  -fa on \
-  --cache-type-k turbo3 \
-  --cache-type-v turbo3 \
-  -np 1 \
-  -ub 128 \
-  -b 512 \
-  --rope-scaling yarn \
-  --rope-freq-scale 0.25 \
-  --override-kv "qwen35moe.context_length=int:1048576" \
-  --port 8080 \
-  --host 0.0.0.0 \
-  --chat-template-kwargs '{"enable_thinking":false}' &
+/opt/llama.cpp/build/bin/llama-server \
+  -m /opt/models/Qwen3.5-35B-A3B-UD-IQ2_M.gguf \
+  --ctx-size 1048576 \
+  --parallel 1 \
+  --n-gpu-layers 999 \
+  --flash-attn on \
+  --cache-type-k q4_0 \
+  --cache-type-v q4_0 \
+  --ubatch-size 256 \
+  --checkpoint-every-n-tokens 256 \
+  --slot-save-path /tmp/slots \
+  --reasoning off \
+  --host 0.0.0.0 --port 8080 &
 
-# Wait for server
-sleep 30
+echo "Waiting for llama-server..."
+until curl -sf http://localhost:8080/health > /dev/null 2>&1; do
+  sleep 5
+done
+echo "llama-server ready"
 
-# Start proxy
-python3 /opt/proxy.py &
-
-# Start nginx
-nginx -g "daemon off;"
+# Start proxy (blocks, handles requests)
+python3 /opt/proxy.py
