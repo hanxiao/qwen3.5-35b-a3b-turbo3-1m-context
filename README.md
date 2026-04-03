@@ -201,6 +201,73 @@ gcloud compute instances create qwen-1m-l4 \
 
 Cost: ~$0.86/hr (~$620/month). Use standard, not spot.
 
+## Comparison with Other Setups
+
+Three configurations of Qwen3.5-35B-A3B on L4 24GB, each making different trade-offs within the same 23GB VRAM budget.
+
+### What's the Same
+
+All three share:
+- Same GPU: NVIDIA L4 24GB
+- Same model family: Qwen3.5-35B-A3B (hybrid GDN + MoE, 256 experts, 8 active, 3B active params)
+- Same KV cache quantization: q4_0 (4-bit keys and values)
+- Same llama.cpp backend
+- `--flash-attn on`, `--n-gpu-layers 999`, `--parallel 1`
+
+### What's Different
+
+| | General Chat ([L4-deploy](https://github.com/hanxiao/Qwen3.5-35B-A3B-L4-deploy)) | 250K Papers QA (production) | 1M Novel QA (this repo) |
+|---|---|---|---|
+| **Purpose** | General chat + vision API | Jina research papers search | Full novel in-context QA |
+| **Model quant** | Q4_K_M (20 GB) | Q4_K_M (20 GB) | IQ2_M (10.5 GB) |
+| **Vision (mmproj)** | Yes (858 MB) | No | No |
+| **Context size** | 98K | 262K (native max) | 1M (4x training length) |
+| **KV cache size** | 540 MB | 1,440 MB | 5,760 MB |
+| **VRAM headroom** | ~0.5 GB free | ~1.5 GB free | ~5 GB free |
+| **Decode speed** | 67 tok/s | 18-22 tok/s | 5.1 tok/s |
+| **Prefill** | On-demand | ~9 min (245K tokens) | ~60 min (905K tokens) |
+| **Proxy** | None (direct API) | Yes (holds token IDs) | Yes (holds token IDs) |
+| **Runtime** | Docker (official image) | Docker (official image) | Local build + patch |
+| **Patches needed** | None | None | Slot cap removal |
+| **Instance type** | Spot | Spot | Standard |
+| **Cost** | ~$0.26/hr | ~$0.26/hr | ~$0.86/hr |
+
+### Why Each Differs
+
+Every difference is driven by a single constraint: **23 GB VRAM budget**.
+
+| Trade-off | Reason |
+|-----------|--------|
+| IQ2_M instead of Q4_K_M | Q4_K_M (20 GB) + 1M KV cache (5.7 GB) = 25.7 GB. OOM. IQ2_M (10.5 GB) + 5.7 GB = 16.2 GB. Fits. |
+| No mmproj | 858 MB saved. General chat needs vision; papers/novel QA doesn't. |
+| Local build instead of Docker | Official image caps slot context to `n_ctx_train` (262K). 1M requires patching `server-context.cpp`. |
+| Standard instead of Spot | 60-min cold prefill can't survive preemption. 250K prefill (9 min) is short enough to risk spot. |
+| Proxy architecture | At 905K tokens, the prompt is 7 MB of token IDs. Browser can't send this per query. Proxy holds it in memory. |
+
+### Quality Impact
+
+IQ2_M (2.7 bits per weight) is a significant quality reduction vs Q4_K_M (4.5 bpw):
+- Factual recall from context: generally correct (聚贤庄 test passed)
+- Occasional hallucination of details not in source text
+- Acceptable for search/retrieval over known documents; not ideal for creative or reasoning tasks
+- If quality matters more than context length, use Q3_K_M on A100 40GB
+
+### Is Anything Overkill?
+
+No. Each configuration sits at a different point on the same Pareto frontier:
+
+```
+Quality ▲
+        │  ● General (Q4_K_M, 98K, +vision)
+        │
+        │       ● Papers (Q4_K_M, 262K)
+        │
+        │              ● Novel (IQ2_M, 1M)
+        └──────────────────────────────────► Context Length
+```
+
+Moving right on context length forces moving down on quality (smaller quant) and dropping features (no vision). There's no wasted VRAM in any configuration.
+
 ## References
 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
