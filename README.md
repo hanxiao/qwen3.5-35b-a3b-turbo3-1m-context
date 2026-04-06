@@ -62,9 +62,9 @@ python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('unslot
   --override-kv "qwen35moe.context_length=int:1048576" \
   --port 8080 \
   --host 0.0.0.0 \
-  --chat-template-kwargs '{"enable_thinking":false}'
+  --reasoning off
 
-> **Note**: Thinking is disabled by default (`enable_thinking: false`). This avoids wasting tokens on `<think>...</think>` tags for this use case.
+> **Note**: `--reasoning off` disables thinking output to save tokens.
 ```
 
 ## Proxy + UI
