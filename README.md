@@ -4,17 +4,25 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 ## Key Results
 
-| Component | VRAM |
-|-----------|------|
+| Metric | Value |
+|--------|-------|
+| **VRAM Budget** | |
 | Model weights (Q3_K_M) | 15,190 MiB |
-| KV cache turbo3 (1M tokens) | 4,480 MiB |
-| Compute buffer | 777 MiB |
-| **Total** | **~20.5 GB / 23 GB** |
-
-- **Prefill speed**: ~513 tok/s
-- **Decode speed**: ~9 tok/s (end-to-end through proxy at 905K context)
-- **KV compression**: 4.9x vs fp16 (turbo3 = 3.25 bits/val)
-- **Quality**: PPL +1.1% vs q8_0 baseline
+| KV cache turbo3 (1M tokens) | 4,000 MiB |
+| Compute buffer (ubatch=128) | 779 MiB |
+| Checkpoints (32 x 62.8 MiB) | ~2,000 MiB |
+| **Peak VRAM** | **22,052 MiB (97.7% of 24GB)** |
+| **Performance** | |
+| Cold prefill (905K tokens) | 222 tok/s (~18 min) |
+| Warm query prefill (cache hit) | 151-156 tok/s |
+| Decode @ 905K context | 58-59 tok/s |
+| TTFT (Time To First Token) | ~1.9s |
+| Slot save time | 60 ms (65 MB file) |
+| Slot restore time | 38 ms |
+| **Compression & Quality** | |
+| KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
+| Model quality (Q3_K_M) | 3.5 bpw |
+| Thinking output | Disabled (`--reasoning off`) |
 
 ## How It Works
 
@@ -35,7 +43,7 @@ docker run --gpus all -p 8080:8080 qwen-1m
 ### Manual
 
 ```bash
-# 1. Build TurboQuant fork
+# 1. Build TurboQuant fork (Madreag/spiritbuun native FA)
 git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git
 cd llama-cpp-turboquant-cuda
 git checkout feature/turboquant-kv-cache
@@ -47,25 +55,28 @@ pip install huggingface_hub
 python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.5-35B-A3B-GGUF', 'Qwen3.5-35B-A3B-Q3_K_M.gguf', local_dir='./models')"
 
 # 3. Start server
-./build/bin/llama-server \
+GGML_TURBO_DECODE_NATIVE=1 ./build/bin/llama-server \
   -m models/Qwen3.5-35B-A3B-Q3_K_M.gguf \
   -c 1048576 \
-  -ngl 99 \
+  -ctk turbo3 \
+  -ctv turbo3 \
   -fa on \
-  --cache-type-k turbo3 \
-  --cache-type-v turbo3 \
-  -np 1 \
-  -ub 128 \
-  -b 512 \
-  --rope-scaling yarn \
-  --rope-freq-scale 0.25 \
-  --override-kv "qwen35moe.context_length=int:1048576" \
+  -ngl 999 \
   --port 8080 \
   --host 0.0.0.0 \
+  --slot-save-path /tmp/slots \
+  -np 1 \
+  -ub 128 \
+  --no-warmup \
   --reasoning off
-
-> **Note**: `--reasoning off` disables thinking output to save tokens.
 ```
+
+**Key parameters:**
+- `GGML_TURBO_DECODE_NATIVE=1`: Use native turbo3 Flash Attention (no KV decompression overhead)
+- `-ctk turbo3 -ctv turbo3`: TurboQuant KV cache (5.12x compression)
+- `--slot-save-path /tmp/slots`: Enable KV cache slot save/restore (65 MB file, 38 ms restore)
+- `--no-warmup`: Skip warmup prefill (use slot restore instead)
+- `--reasoning off`: Disable thinking output to save tokens
 
 ## Proxy + UI
 
