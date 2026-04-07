@@ -265,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         query = body.get("query", "")
         max_tokens = min(body.get("max_tokens", 2048), 4096)
-        temperature = body.get("temperature", 0.3)
+        temperature = body.get("temperature", 0.7)
 
         if not try_acquire_gpu(timeout=120):
             self.send_response(429)
@@ -287,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
                 "temperature": temperature,
                 "stream": True,
                 "cache_prompt": True,
-                "stop": ["<|im_end|>", "<|im_start|>"]
+                "stop": ["<|im_end|>", "<|im_start|>"], "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0
             }).encode()
 
             req = urllib.request.Request(
