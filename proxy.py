@@ -233,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
         
         if self.path == "/" or self.path.startswith("/?" ) or self.path == "/index.html":
             try:
-                with open("/tmp/index.html", "r") as f:
+                with open("/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/index.html", "r") as f:
                     html = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -354,7 +354,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         super().server_bind()
 
 if __name__ == "__main__":
-    sys.stdout = open('/tmp/proxy.log', 'a', buffering=1)
+    sys.stdout = open('/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/proxy.log', 'a', buffering=1)
     sys.stderr = sys.stdout
     
     threading.Thread(target=preload, daemon=True).start()
