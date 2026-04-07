@@ -211,19 +211,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
+            # Get VRAM usage
+            vram = {}
+            try:
+                import subprocess
+                out = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'], timeout=5).decode().strip()
+                used, total = out.split(', ')
+                vram = {"used_gb": round(int(used)/1024, 1), "total_gb": round(int(total)/1024, 1)}
+            except:
+                pass
             resp = {
                 "status": "ok",
                 "ready": READY,
                 "base_tokens": BASE_TOKENS,
                 "corpus": CORPUS_INFO,
                 "queue": GPU_QUEUE_SIZE,
+                "vram": vram,
             }
             self.wfile.write(json.dumps(resp).encode())
             return
         
         if self.path == "/" or self.path.startswith("/?" ) or self.path == "/index.html":
             try:
-                with open("/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/index.html", "r") as f:
+                with open("/tmp/index.html", "r") as f:
                     html = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -344,7 +354,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         super().server_bind()
 
 if __name__ == "__main__":
-    sys.stdout = open('/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/proxy.log', 'a', buffering=1)
+    sys.stdout = open('/tmp/proxy.log', 'a', buffering=1)
     sys.stderr = sys.stdout
     
     threading.Thread(target=preload, daemon=True).start()

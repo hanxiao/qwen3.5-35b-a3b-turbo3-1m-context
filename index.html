@@ -74,7 +74,7 @@ header p{font-size:12px;color:#888;margin-top:4px;font-family:'IBM Plex Mono','S
 <body>
 <header>
 <h1>1M context KV cache as document store</h1>
-<p>Qwen3.5-35B-A3B (Q3_K_M) · turbo3 KV · NVIDIA L4 24GB · 97.7% VRAM</p>
+<p>Qwen3.5-35B-A3B (Q3_K_M) · turbo3 KV · NVIDIA L4 24GB · <span id="s-vram-pct">-</span>% VRAM</p>
 </header>
 <div class="context-bar">
 <div class="label-row"><span>context window · 1,048,576 tokens</span><span id="ctx-pct">-</span></div>
@@ -91,7 +91,7 @@ header p{font-size:12px;color:#888;margin-top:4px;font-family:'IBM Plex Mono','S
 </div>
 <div id="status-bar">
 <span><span class="stat"><span class="dot" id="dot"></span>prefilled: <span id="s-cached">-</span></span></span>
-<span><span class="stat">vram: 22.1 / 23.0 GB</span></span>
+<span><span class="stat" id="s-vram">vram: - / - GB</span></span>
 <span><span class="stat">decode: <span id="s-speed">-</span></span></span>
 </div>
 
@@ -182,18 +182,20 @@ if(d.ready){
   BASE_TOKENS=d.base_tokens||0;
   updateBar(BASE_TOKENS,0);
   document.getElementById('s-cached').textContent=BASE_TOKENS.toLocaleString();
+  if(d.vram&&d.vram.total_gb){document.getElementById('s-vram').textContent='vram: '+d.vram.used_gb+' / '+d.vram.total_gb+' GB';document.getElementById('s-vram-pct').textContent=(d.vram.used_gb/d.vram.total_gb*100).toFixed(1)}
 }else{
   document.getElementById('dot').className='dot amber';
   area.innerHTML='<div class="response empty">loading... prefilling 905K tokens (~18 min)</div>';
   setTimeout(pollHealth,5000);
 }
-}).catch(()=>{
-  document.getElementById('dot').className='dot';
-  area.innerHTML='<div class="response empty">connecting to server...</div>';
-  setTimeout(pollHealth,3000);
+}).catch((e)=>{
+  document.getElementById('dot').className='dot red';
+  document.getElementById('s-cached').textContent='ERR';
+  area.innerHTML='<div class="response empty">connecting to server... ('+e.message+')</div>';
+  setTimeout(pollHealth,5000);
 });
 }
-pollHealth();
+try{pollHealth()}catch(e){document.getElementById('s-cached').textContent='JS:'+e.message}
 </script>
 </body>
 </html>
