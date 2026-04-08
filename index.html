@@ -88,6 +88,7 @@ header p{font-size:12px;color:#888;margin-top:4px;font-family:'IBM Plex Mono','S
 <div id="input-area">
 <textarea id="query" rows="1" placeholder="问关于天龙八部的问题..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendQuery()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
 <button id="send" onclick="sendQuery()">search</button>
+<button id="stop" style="display:none;background:#ef4444;color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:'IBM Plex Mono','SF Mono','Menlo',monospace" onclick="stopGen()">stop</button>
 </div>
 <div id="status-bar">
 <span><span class="stat"><span class="dot" id="dot"></span>prefilled: <span id="s-cached">-</span></span></span>
@@ -115,12 +116,15 @@ function updateBar(cached,gen){
 marked.setOptions({breaks:true,gfm:true});
 function renderMd(text){try{return marked.parse(text)}catch(e){return text}}
 
+let curReader=null;
+function stopGen(){if(curReader){try{curReader.cancel()}catch(e){}}curReader=null;document.getElementById('send').disabled=false;document.getElementById('send').style.display='';document.getElementById('stop').style.display='none'}
 async function sendQuery(){
 const input=document.getElementById('query');
 const btn=document.getElementById('send');
+const stopBtn=document.getElementById('stop');
 const q=input.value.trim();
 if(!q)return;
-input.value='';input.style.height='auto';btn.disabled=true;
+input.value='';input.style.height='auto';btn.disabled=true;btn.style.display='none';stopBtn.style.display='';
 
 area.innerHTML='<div class="query-label">Query</div><div class="query-text"></div><div class="response"></div>';
 area.querySelector('.query-text').textContent=q;
@@ -136,9 +140,9 @@ if(resp.status!==429)break;
 resp_el.innerHTML='<span style="color:#f59e0b;font-style:italic">GPU busy, waiting... (attempt '+(attempt+1)+')</span>';
 await new Promise(r=>setTimeout(r,5000));
 }
-if(resp.status===429){resp_el.innerHTML='<span style="color:#ef4444">Server too busy.</span>';btn.disabled=false;input.focus();return}
-if(resp.status===503){const d=await resp.json();resp_el.innerHTML='<span style="color:#f59e0b">'+d.error+'</span>';btn.disabled=false;input.focus();return}
-const reader=resp.body.getReader();const dec=new TextDecoder();
+if(resp.status===429){resp_el.innerHTML='<span style="color:#ef4444">Server too busy.</span>';btn.disabled=false;btn.style.display='';stopBtn.style.display='none';input.focus();return}
+if(resp.status===503){const d=await resp.json();resp_el.innerHTML='<span style="color:#f59e0b">'+d.error+'</span>';btn.disabled=false;btn.style.display='';stopBtn.style.display='none';input.focus();return}
+const reader=resp.body.getReader();curReader=reader;const dec=new TextDecoder();
 let full='',buf='',genStart=null,displayText='',lastRender=0;
 while(true){
 const{done,value}=await reader.read();if(done)break;
@@ -171,7 +175,7 @@ const tps=genStart?((tokenCount/((Date.now()-genStart)/1000)).toFixed(1)):'-';
 document.getElementById('s-speed').textContent=tps+' tok/s ('+totalS+'s total)';
 updateBar(BASE_TOKENS,0);
 }catch(e){resp_el.innerHTML='<span style="color:#ef4444">Error: '+e.message+'</span>'}
-btn.disabled=false;input.focus();
+curReader=null;btn.disabled=false;btn.style.display='';stopBtn.style.display='none';input.focus();
 }
 
 // Init
