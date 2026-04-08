@@ -14,10 +14,11 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 | Checkpoints (32 x 62.8 MiB) | 2,010 MiB |
 | **Peak VRAM** | **22,052 MiB / 23,034 MiB (95.7%)** |
 | **Performance** | |
-| Cold prefill (905K tokens) | 221 tok/s (4,091s total) |
-| Slot restore time | 2.3s (905K tokens) |
-| Decode @ 905K context | 9.0 tok/s |
-| TTFT (Time To First Token) | 6.3s (includes 3s server-side tokenization) |
+| Cold prefill (905K tokens) | 221 tok/s (4,112s total) |
+| Slot restore time | 2.6s (905K tokens) |
+| Decode @ 905K context | 8.8 tok/s |
+| TTFT with append_to_slot | 3.8s (no re-tokenization, only prompt cache update) |
+| TTFT with full prompt resend | 6.3s (includes 3s tokenization + 3s cache update) |
 | **Compression & Quality** | |
 | KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
 | Model quality (Q3_K_M) | 3.51 bpw |
@@ -31,9 +32,10 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 4. **YaRN RoPE scaling**: Extends 262K training context to 1M via position interpolation
 5. **Low ubatch**: ubatch=128 reduces compute buffer from 3GB to 779MB
 6. **Slot save/restore**: One-time 68-minute prefill saved to disk (3.5GB slot file). Subsequent restores take 2.3s
-7. **Text prompt + prefix matching**: Each query sends the full document as a text string. llama-server tokenizes internally (~3s) and uses `cache_prompt` to match against the 905K tokens already in VRAM, only evaluating the new query tokens
-8. **Hybrid/recurrent model patches**: Qwen3.5 uses a hybrid attention+recurrent architecture requiring patches for correct KV cache truncation and slot restore ([ggml-org/llama.cpp#20225](https://github.com/ggml-org/llama.cpp/pull/20225))
-9. **Context checkpoints**: 32 checkpoints created every 8,192 tokens during prefill (62.8 MiB each), enabling efficient cache reuse
+7. **`append_to_slot` mode**: Query tokens are appended directly to the cached KV state without resending the 905K base tokens. Eliminates network transfer and tokenization overhead. Requires a patched llama-server (see `patches/append-to-slot.patch`)
+8. **Fallback: text prompt + prefix matching**: Alternatively, the full document can be sent as text. llama-server tokenizes internally (~3s) and uses `cache_prompt` to match against the 905K tokens already in VRAM, only evaluating the new query tokens
+9. **Hybrid/recurrent model patches**: Qwen3.5 uses a hybrid attention+recurrent architecture requiring patches for correct KV cache truncation and slot restore ([ggml-org/llama.cpp#20225](https://github.com/ggml-org/llama.cpp/pull/20225))
+10. **Context checkpoints**: 32 checkpoints created every 8,192 tokens during prefill (62.8 MiB each), enabling efficient cache reuse
 
 ## Quick Start
 
@@ -67,12 +69,17 @@ GGML_TURBO_DECODE_NATIVE=1 ./build/bin/llama-server \
   --no-warmup \
   --reasoning off
 
-# 4. Generate 1M token KV cache slot (~68 mins)
+# 4. Apply append_to_slot patch
+cd llama-cpp-turboquant-cuda
+git apply /path/to/patches/append-to-slot.patch
+cmake --build build -j$(nproc)
+
+# 5. Generate 1M token KV cache slot (~68 mins)
 # Downloads the corpus and pre-computes the KV cache
 python3 prefill.py
 
-# 5. Start proxy (port 8082)
-# Loads the saved KV cache and handles chat queries
+# 6. Start proxy (port 8082)
+# Loads the saved KV cache and handles chat queries via append_to_slot
 python3 proxy.py
 ```
 
@@ -103,7 +110,7 @@ Sources:
 
 ## Proxy + UI
 
-The proxy serves both the web UI and the chat API on port 8082. On startup it restores the saved KV cache slot. For each query, it prepends the full document text and sends it to llama-server, which tokenizes internally and reuses the cached KV via prefix matching.
+The proxy serves both the web UI and the chat API on port 8082. On startup it restores the saved KV cache slot. For each query, it sends ONLY the query tokens with `append_to_slot: true`, which appends them directly to the cached 905K KV state. After each request, the clean slot is restored for the next query.
 
 ```bash
 python3 proxy.py  # serves UI + API on port 8082
@@ -119,8 +126,8 @@ See `niah/` directory for the NIAH benchmark script. Tests retrieval accuracy at
 Browser --> proxy.py (8082) --> llama-server (8080)
                 |                      |
          serves UI +            905K tokens KV cache
-         prepends document      locked in VRAM via
-         text to each query     slot restore + cache_prompt
+         sends only query       locked in VRAM via
+         tokens (append mode)   slot restore + append_to_slot
 ```
 
 ## Hardware Requirements

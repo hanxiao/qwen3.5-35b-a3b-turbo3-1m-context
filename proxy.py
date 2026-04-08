@@ -6,8 +6,9 @@ Single corpus: tianlong_full.txt (905K tokens, already prefilled and saved as sl
 
 Architecture:
 - On startup: restore saved slot (905K tokens KV cache, ~2.5s)
-- On each request: send ONLY query tokens + n_keep=BASE_TOKENS
-  llama-server keeps the base 905K KV cache locked in VRAM, only processes query tokens
+- On each request: use append_to_slot to send ONLY query tokens
+  llama-server appends them to the cached 905K KV state
+- After each request: restore clean slot for next query
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -23,8 +24,7 @@ import sys
 LLAMA_API = "http://localhost:8080"
 READY = False
 BASE_TOKENS = 0
-ACTIVE_TOKEN_IDS = []
-SLOT_FILE = "tianlong_1m_Q3KM_turbo3"
+SLOT_FILE = "tianlong_clean_905k"
 
 # GPU queue: only one request at a time
 GPU_LOCK = threading.Semaphore(1)
@@ -52,46 +52,26 @@ def tokenize(text):
     result = api_call("/tokenize", {"content": text, "with_pieces": False})
     return result["tokens"]
 
+def restore_slot():
+    """Restore clean 905K slot for next request."""
+    result = api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=30)
+    return result.get("n_restored", 0)
+
 def preload():
-    global READY, BASE_TOKENS, ACTIVE_TOKEN_IDS
+    global READY, BASE_TOKENS
 
-    # Tokenize the base text once on startup
     try:
-        with open("tianlong_full.txt", "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        system_instruction = (
-            "\n\n---\n\n"
-            "你是一个关于金庸小说《天龙八部》的问答系统。上面是小说完整全文。"
-            "回答用户关于人物、情节、武功、对话的提问。"
-            "规则:\n"
-            "- 直接回答，不要输出 thinking 过程、不要输出 <think> 标签。\n"
-            "- 引用原文时注明章节。\n"
-            "- 优先直接引用原文。\n"
-            "- 回答简洁准确，不要废话。\n"
-        )
-        base_text = "<|im_start|>system\n" + text + system_instruction + "<|im_end|>\n"
-        print("Tokenizing base text...", flush=True)
-        t0 = time.time()
-        ACTIVE_TOKEN_IDS = tokenize(base_text)
-        BASE_TOKENS = len(ACTIVE_TOKEN_IDS)
-        print(f"Tokenized: {BASE_TOKENS} tokens in {time.time()-t0:.1f}s", flush=True)
-    except Exception as e:
-        print(f"ERROR: Could not load/tokenize: {e}", flush=True)
-        return
-
-    # Restore the saved slot
-    try:
-        result = api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=30)
-        n_restored = result.get("n_restored", 0)
-        if n_restored > 0:
-            print(f"Restored slot: {n_restored} tokens in KV cache", flush=True)
+        n = restore_slot()
+        if n > 0:
+            BASE_TOKENS = n
+            print(f"Restored slot: {n} tokens in KV cache", flush=True)
             READY = True
-            return
         else:
             print("ERROR: Slot restore returned 0 tokens!", flush=True)
+            print("Run prefill.py first to generate the slot file.", flush=True)
     except Exception as e:
         print(f"ERROR: Slot restore failed: {e}", flush=True)
-        print("Run full prefill + save slot first, then restart proxy.", flush=True)
+        print("Run prefill.py first, then restart proxy.", flush=True)
 
 
 def try_acquire_gpu(timeout=60):
@@ -147,7 +127,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/" or self.path.startswith("/?") or self.path == "/index.html":
             try:
-                with open("/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/index.html", "r") as f:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                with open(os.path.join(script_dir, "index.html"), "r") as f:
                     html = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -190,21 +171,20 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Restore slot to clean 905K base state before each request
-            # This avoids the hybrid/recurrent model bug where prefix matching
-            # hangs after a previous query modified the cached token sequence
-            api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=10)
+            # Restore clean slot before each request
+            restore_slot()
 
+            # Tokenize only the query (not the 905K base)
             query_text = f"<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
             query_tokens = tokenize(query_text)
-            full_tokens = list(ACTIVE_TOKEN_IDS) + query_tokens
 
             payload = json.dumps({
-                "prompt": full_tokens,
+                "prompt": query_tokens,
                 "n_predict": max_tokens,
                 "temperature": temperature,
                 "stream": True,
                 "cache_prompt": True,
+                "append_to_slot": True,
                 "stop": ["<|im_end|>", "<|im_start|>"],
                 "top_p": 0.8, "top_k": 20, "min_p": 0.0,
                 "presence_penalty": 1.5, "repeat_penalty": 1.0
@@ -216,17 +196,6 @@ class Handler(BaseHTTPRequestHandler):
                 headers={"Content-Type": "application/json"}
             )
 
-            # Wait for slot to be free
-            for _wait in range(30):
-                try:
-                    slots = json.loads(urllib.request.urlopen(f"{LLAMA_API}/slots", timeout=5).read())
-                    if not slots[0].get("is_processing", False):
-                        break
-                except:
-                    pass
-                time.sleep(1)
-                print(f"Waiting for slot to free... ({_wait+1}s)", flush=True)
-
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -235,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
 
             resp = None
             try:
-                print(f"Query: {query[:50]}... ({len(query_tokens)} tokens, payload {len(payload)} bytes)", flush=True)
+                print(f"Query: {query[:50]}... ({len(query_tokens)} tokens)", flush=True)
                 resp = urllib.request.urlopen(req, timeout=300)
                 buffer = b''
                 while True:
@@ -299,7 +268,8 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         super().server_bind()
 
 if __name__ == "__main__":
-    sys.stdout = open('/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/proxy.log', 'a', buffering=1)
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy.log")
+    sys.stdout = open(log_path, 'a', buffering=1)
     sys.stderr = sys.stdout
 
     threading.Thread(target=preload, daemon=True).start()
