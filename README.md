@@ -1,6 +1,6 @@
 # Qwen3.5-35B-A3B 1M Context on L4 24GB
 
-Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB VRAM) using TurboQuant extreme KV cache quantization.
+Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB VRAM) using TurboQuant extreme KV cache quantization. Minimum hardware requirements: any GPU with 23+ GB VRAM, CUDA 12.8+, 16GB system RAM, 20GB disk.
 
 ## Key Results
 
@@ -129,13 +129,6 @@ Browser --> proxy.py (8082) --> llama-server (8080)
          sends only query       locked in VRAM via
          tokens (append mode)   slot restore + append_to_slot
 ```
-
-## Hardware Requirements
-
-- **GPU**: NVIDIA L4 24GB (or any GPU with 23+ GB VRAM)
-- **CUDA**: 12.8+
-- **RAM**: 16GB+ system RAM
-- **Disk**: 20GB+ for model
 
 ## GCP Deployment
 
