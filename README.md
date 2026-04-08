@@ -17,7 +17,7 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 | Cold prefill (905K tokens) | 221 tok/s (4,112s total) |
 | Slot restore time | 2.6s (905K tokens) |
 | Decode @ 905K context | 8.8 tok/s |
-| TTFT with append_to_slot | 3.8s (no re-tokenization, only prompt cache update) |
+| TTFT with append_to_slot | 0.53s (skips tokenization and cache update) |
 | TTFT with full prompt resend | 6.3s (includes 3s tokenization + 3s cache update) |
 | **Compression & Quality** | |
 | KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |

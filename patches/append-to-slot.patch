@@ -1,30 +1,282 @@
-From: Han Xiao <han.xiao@jina.ai>
-Subject: [PATCH] Add append_to_slot for efficient multi-turn on cached KV
-
-Adds `append_to_slot` parameter to /completion endpoint.
-When true, query tokens are appended to the existing slot's cached
-KV state instead of requiring the full prompt to be resent.
-
-This enables:
-- TTFT ~3.7s (vs ~6.3s with full prompt resend)
-- Zero network transfer of 905K cached tokens
-- Zero re-tokenization of the base document
-- Correct multi-turn conversation on hybrid/recurrent models (Qwen3.5)
-
-The implementation:
-1. Adds `append_to_slot` bool to task_params (server-task.h/.cpp)
-2. In server_slot, adds `n_input_total` and `append_tokens` vector
-3. On SLOT_STATE_STARTED with append mode, constructs combined token
-   sequence from slot.prompt.tokens (cached) + task.tokens (query)
-4. Replaces all slot.task->n_tokens() references in the processing
-   loop with slot.n_input_total for correct bounds checking
-5. Uses a persistent append_tokens buffer to avoid reconstruction
-   on each batch iteration (fixes crash with hybrid models)
-
-Applied against: spiritbuun/llama-cpp-turboquant-cuda
-Branch: feature/turboquant-kv-cache
-
----
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 0e0cb2c83..e146efd92 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -73,6 +73,8 @@ struct server_slot {
+     int32_t n_remaining = -1;
+     int32_t i_batch     = -1;
+ 
++    int32_t n_input_total = 0; // total input tokens
++    std::vector<llama_token> append_tokens; // full combined tokens for append mode
+     int32_t n_prompt_tokens_cache     = 0;
+     int32_t n_prompt_tokens_processed = 0;
+ 
+@@ -1011,6 +1013,8 @@ private:
+             update_cache = update_cache && task.type == SERVER_TASK_TYPE_COMPLETION;
+ 
+             // don't update the cache if the slot's context is empty
++            // skip cache update for append_to_slot mode (no prefix matching needed)
++            update_cache = update_cache && !task.params.append_to_slot;
+             update_cache = update_cache && tokens.size() > 0;
+ 
+             if (update_cache) {
+@@ -1257,7 +1261,7 @@ private:
+             slot.has_next_token = false;
+ 
+             SLT_DBG(slot, "stopped due to running out of context capacity, prompt.n_tokens() = %d, task.n_tokens = %d, n_decoded = %d, n_ctx = %d\n",
+-                    slot.prompt.n_tokens(), slot.task->n_tokens(), slot.n_decoded, slot.n_ctx);
++                    slot.prompt.n_tokens(), slot.n_input_total, slot.n_decoded, slot.n_ctx);
+         }
+ 
+         // check the limits
+@@ -1386,7 +1390,7 @@ private:
+     }
+ 
+     void send_error(const server_slot & slot, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
+-        send_error(slot.task->id, error, type, slot.task->n_tokens(), slot.n_ctx);
++        send_error(slot.task->id, error, type, slot.n_input_total, slot.n_ctx);
+     }
+ 
+     void send_error(const int id_task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER, const int32_t n_prompt_tokens = 0, const int32_t n_ctx = 0) {
+@@ -1423,7 +1427,7 @@ private:
+ 
+         if (is_progress) {
+             res->is_progress        = true;
+-            res->progress.total     = slot.task->n_tokens();
++            res->progress.total     = slot.n_input_total;
+             res->progress.cache     = slot.n_prompt_tokens_cache;
+             res->progress.processed = slot.prompt.tokens.size();
+             res->progress.time_ms   = (ggml_time_us() - slot.t_start_process_prompt) / 1000;
+@@ -1433,7 +1437,7 @@ private:
+         }
+ 
+         res->n_decoded             = slot.n_decoded;
+-        res->n_prompt_tokens       = slot.task->n_tokens();
++        res->n_prompt_tokens       = slot.n_input_total;
+         res->n_prompt_tokens_cache = slot.n_prompt_tokens_cache;
+         res->post_sampling_probs   = slot.task->params.post_sampling_probs;
+ 
+@@ -1482,7 +1486,7 @@ private:
+ 
+         res->truncated             = slot.truncated;
+         res->n_decoded             = slot.n_decoded;
+-        res->n_prompt_tokens       = slot.task->n_tokens();
++        res->n_prompt_tokens       = slot.n_input_total;
+         res->n_prompt_tokens_cache = slot.n_prompt_tokens_cache;
+         res->n_tokens_cached       = slot.prompt.n_tokens();
+         res->has_new_line          = slot.has_new_line;
+@@ -1522,7 +1526,7 @@ private:
+         auto res = std::make_unique<server_task_result_embd>();
+         res->id        = slot.task->id;
+         res->index     = slot.task->index;
+-        res->n_tokens  = slot.task->n_tokens();
++        res->n_tokens  = slot.n_input_total;
+         res->res_type  = slot.task->params.res_type;
+ 
+         const int n_embd_out = llama_model_n_embd_out(model);
+@@ -1567,7 +1571,7 @@ private:
+         auto res = std::make_unique<server_task_result_rerank>();
+         res->id       = slot.task->id;
+         res->index    = slot.task->index;
+-        res->n_tokens = slot.task->n_tokens();
++        res->n_tokens = slot.n_input_total;
+ 
+         for (int i = 0; i < batch.n_tokens; ++i) {
+             if (!batch.logits[i] || batch.seq_id[i][0] != slot.id) {
+@@ -2005,7 +2009,7 @@ private:
+                 }
+ 
+                 // Shift context
+-                int n_keep = slot.task->params.n_keep < 0 ? slot.task->n_tokens() : slot.task->params.n_keep;
++                int n_keep = slot.task->params.n_keep < 0 ? slot.n_input_total : slot.task->params.n_keep;
+ 
+                 if (add_bos_token) {
+                     n_keep += 1;
+@@ -2149,7 +2153,27 @@ private:
+ 
+                 // this slot still has a prompt to be processed
+                 if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
+-                    const auto & input_tokens = slot.task->tokens;
++                    // append mode: calculate total input size (cached + query) and populate append_tokens
++                    if (slot.state == SLOT_STATE_STARTED) {
++                        if (slot.task->params.append_to_slot && slot.prompt.n_tokens() > 0) {
++                            slot.n_input_total = slot.prompt.n_tokens() + slot.task->n_tokens();
++                            slot.append_tokens.clear();
++                            slot.append_tokens.reserve(slot.n_input_total);
++                            const auto & cached_toks = slot.prompt.tokens.get_text_tokens();
++                            slot.append_tokens.insert(slot.append_tokens.end(), cached_toks.begin(), cached_toks.end());
++                            const auto & query_toks = slot.task->tokens.get_text_tokens();
++                            slot.append_tokens.insert(slot.append_tokens.end(), query_toks.begin(), query_toks.end());
++                        } else {
++                            slot.n_input_total = slot.task->n_tokens();
++                        }
++                    }
++
++                    // append mode: use persisted combined tokens
++                    std::unique_ptr<server_tokens> _append_buf;
++                    if (slot.task->params.append_to_slot && !slot.append_tokens.empty()) {
++                        _append_buf = std::make_unique<server_tokens>(slot.append_tokens, false);
++                    }
++                    const auto & input_tokens = _append_buf ? *_append_buf : slot.task->tokens;
+ 
+                     // used to determine the number of tokens added to the batch for the current slot
+                     const auto n_tokens_prev = batch.n_tokens;
+@@ -2161,8 +2185,11 @@ private:
+ 
+                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
+ 
+-                        SLT_INF(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
+-                                slot.n_ctx, slot.task->params.n_keep, slot.task->n_tokens());
++                        // n_input_total is already calculated
++
++
++                        SLT_INF(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, n_input_total = %d\n",
++                                slot.n_ctx, slot.task->params.n_keep, slot.n_input_total);
+ 
+                         // print prompt tokens (for debugging)
+                         /*if (1) {
+@@ -2199,33 +2226,33 @@ private:
+                         }
+ 
+                         if (!slot.can_split()) {
+-                            if (slot.task->n_tokens() > n_ubatch) {
++                            if (slot.n_input_total > n_ubatch) {
+                                 send_error(slot,
+                                            string_format(
+                                                "input (%d tokens) is too large to process. increase the physical batch "
+                                                "size (current batch size: %d)",
+-                                               slot.task->n_tokens(), n_ubatch),
++                                               slot.n_input_total, n_ubatch),
+                                            ERROR_TYPE_SERVER);
+                                 slot.release();
+                                 continue;
+                             }
+ 
+-                            if (slot.task->n_tokens() > slot.n_ctx) {
++                            if (slot.n_input_total > slot.n_ctx) {
+                                 send_error(
+                                     slot,
+                                     string_format(
+                                         "input (%d tokens) is larger than the max context size (%d tokens). skipping",
+-                                        slot.task->n_tokens(), slot.n_ctx),
++                                        slot.n_input_total, slot.n_ctx),
+                                     ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                 slot.release();
+                                 continue;
+                             }
+                         } else {
+-                            if (slot.task->n_tokens() >= slot.n_ctx) {
++                            if (slot.n_input_total >= slot.n_ctx) {
+                                 send_error(slot,
+                                            string_format("request (%d tokens) exceeds the available context size (%d "
+                                                          "tokens), try increasing it",
+-                                                         slot.task->n_tokens(), slot.n_ctx),
++                                                         slot.n_input_total, slot.n_ctx),
+                                            ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                 slot.release();
+                                 continue;
+@@ -2233,7 +2260,14 @@ private:
+ 
+                             if (slot.task->params.cache_prompt) {
+                                 // reuse any previously computed tokens that are common with the new prompt
+-                                n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
++                                                                n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
++                                SLT_WRN(slot, "DEBUG PREFIX: n_past=%d, prompt.tokens.size=%d, input_tokens.size=%d\n", 
++                                    n_past, (int)slot.prompt.tokens.size(), (int)input_tokens.size());
++                                if (slot.prompt.tokens.size() > 0 && input_tokens.size() > 0) {
++                                    SLT_WRN(slot, "DEBUG PREFIX: prompt[0]=%d, input[0]=%d\n", 
++                                        (int)slot.prompt.tokens.get_text_tokens()[0], 
++                                        (int)input_tokens.get_text_tokens()[0]);
++                                }
+ 
+                                 // if there is an alora invoked, don't cache after the invocation start
+                                 if (slot.alora_invocation_start > 0) {
+@@ -2420,8 +2454,8 @@ private:
+                         }
+ 
+                         // [TAG_PROMPT_LOGITS]
+-                        if (n_past == slot.task->n_tokens() && n_past > 0) {
+-                            SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
++                        if (n_past == slot.n_input_total && n_past > 0) {
++                            SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.n_input_total);
+                             n_past--;
+                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
+                         }
+@@ -2440,7 +2474,7 @@ private:
+ 
+                     if (!slot.can_split()) {
+                         // cannot fit the prompt in the current batch - will try next iter
+-                        if (batch.n_tokens + slot.task->n_tokens() > n_batch) {
++                        if (batch.n_tokens + slot.n_input_total > n_batch) {
+                             continue;
+                         }
+                     }
+@@ -2493,7 +2527,7 @@ private:
+                     bool has_mtmd = false;
+ 
+                     // check if we should process the image
+-                    if (slot.prompt.n_tokens() < slot.task->n_tokens() && input_tokens[slot.prompt.n_tokens()] == LLAMA_TOKEN_NULL) {
++                    if (slot.prompt.n_tokens() < slot.n_input_total && input_tokens[slot.prompt.n_tokens()] == LLAMA_TOKEN_NULL) {
+                         // process the image
+                         size_t n_tokens_out = 0;
+                         int32_t res = input_tokens.process_chunk(ctx, mctx, slot.prompt.n_tokens(), slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
+@@ -2516,7 +2550,7 @@ private:
+                     }
+ 
+                     // add prompt tokens for processing in the current batch
+-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.n_tokens < n_batch) {
++                    while (slot.prompt.n_tokens() < slot.n_input_total && batch.n_tokens < n_batch) {
+                         // get next token to process
+                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                         if (cur_tok == LLAMA_TOKEN_NULL) {
+@@ -2552,7 +2586,7 @@ private:
+                             bool should_break = false;
+                             for (int offset : checkpoint_offsets) {
+                                 const int n_last = std::min(n_batch, offset);
+-                                if (slot.task->n_tokens() == slot.prompt.n_tokens() + n_last) {
++                                if (slot.n_input_total == slot.prompt.n_tokens() + n_last) {
+                                     should_break = true;
+                                     break;
+                                 }
+@@ -2567,7 +2601,7 @@ private:
+                     const auto n_tokens_cur = batch.n_tokens - n_tokens_prev;
+ 
+                     // entire prompt has been processed
+-                    if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
++                    if (slot.prompt.n_tokens() == slot.n_input_total) {
+                         slot.state = SLOT_STATE_DONE_PROMPT;
+ 
+                         GGML_ASSERT(batch.n_tokens > 0);
+@@ -2581,7 +2615,7 @@ private:
+                         slot.init_sampler();
+                         SLT_INF(slot, "prompt processing done, n_tokens = %d, batch.n_tokens = %d\n", slot.prompt.n_tokens(), batch.n_tokens);
+                     } else {
+-                        if (slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch) {
++                        if (slot.n_input_total < slot.prompt.n_tokens() + n_ubatch) {
+                             // near the end of the prompt
+                             do_checkpoint = do_checkpoint && true;
+                         } else {
+@@ -2602,7 +2636,7 @@ private:
+                             }
+                         }
+ 
+-                        SLT_INF(slot, "prompt processing progress, n_tokens = %d, batch.n_tokens = %d, progress = %f\n", slot.prompt.n_tokens(), batch.n_tokens, (float) slot.prompt.n_tokens() / slot.task->n_tokens());
++                        SLT_INF(slot, "prompt processing progress, n_tokens = %d, batch.n_tokens = %d, progress = %f\n", slot.prompt.n_tokens(), batch.n_tokens, (float) slot.prompt.n_tokens() / slot.n_input_total);
+                     }
+ 
+                     const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx), slot.id);
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 7d543b929..fda8882a0 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -261,6 +261,7 @@ task_params server_task::params_from_json_cmpl(
+     params.include_usage    = json_value(stream_opt, "include_usage",      false);
+     params.cache_prompt     = json_value(data,       "cache_prompt",       defaults.cache_prompt);
+     params.return_tokens    = json_value(data,       "return_tokens",      false);
++    params.append_to_slot   = json_value(data,       "append_to_slot",     false);
+     params.return_progress  = json_value(data,       "return_progress",    false);
+     auto max_tokens         = json_value(data,       "max_tokens",         defaults.n_predict);
+     params.n_predict        = json_value(data,       "n_predict",          json_value(data, "max_completion_tokens", max_tokens));
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
 index a49ddb594..91b88c98f 100644
 --- a/tools/server/server-task.h
@@ -37,53 +289,3 @@ index a49ddb594..91b88c98f 100644
      bool return_tokens   = false;
      bool return_progress = false;
  
-diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
-index 7d543b929..fda8882a0 100644
---- a/tools/server/server-task.cpp
-+++ b/tools/server/server-task.cpp
-@@ -261,6 +261,7 @@ task_params server_task::params_from_json_cmpl(
-     params.include_usage    = json_value(stream_opt, "include_usage",      false);
-     params.cache_prompt     = json_value(data,       "cache_prompt",       defaults.cache_prompt);
-     params.return_tokens    = json_value(data,       "return_tokens",      false);
-+    params.append_to_slot   = json_value(data,       "append_to_slot",     false);
-     params.return_progress  = json_value(data,       "return_progress",    false);
- 
-diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 0e0cb2c83..d168184e7 100644
---- a/tools/server/server-context.cpp
-+++ b/tools/server/server-context.cpp
-@@ -73,6 +73,8 @@ struct server_slot {
-     int32_t n_remaining = -1;
-     int32_t i_batch     = -1;
- 
-+    int32_t n_input_total = 0; // total input tokens (cached + query in append mode)
-+    std::vector<llama_token> append_tokens; // combined tokens for append mode
-     int32_t n_prompt_tokens_cache     = 0;
-     int32_t n_prompt_tokens_processed = 0;
-
-In the SLOT_STATE_STARTED block, before accessing input_tokens:
-
-+    // append mode: build combined token sequence once
-+    if (slot.state == SLOT_STATE_STARTED) {
-+        if (slot.task->params.append_to_slot && slot.prompt.n_tokens() > 0) {
-+            slot.n_input_total = slot.prompt.n_tokens() + slot.task->n_tokens();
-+            slot.append_tokens.clear();
-+            slot.append_tokens.reserve(slot.n_input_total);
-+            const auto & cached = slot.prompt.tokens.get_text_tokens();
-+            slot.append_tokens.insert(slot.append_tokens.end(), cached.begin(), cached.end());
-+            const auto & query = slot.task->tokens.get_text_tokens();
-+            slot.append_tokens.insert(slot.append_tokens.end(), query.begin(), query.end());
-+        } else {
-+            slot.n_input_total = slot.task->n_tokens();
-+        }
-+    }
-+
-+    // Use persistent combined buffer for append mode
-+    std::unique_ptr<server_tokens> _append_buf;
-+    if (slot.task->params.append_to_slot && !slot.append_tokens.empty()) {
-+        _append_buf = std::make_unique<server_tokens>(slot.append_tokens, false);
-+    }
-+    const auto & input_tokens = _append_buf ? *_append_buf : slot.task->tokens;
-
-Then replace ALL occurrences of slot.task->n_tokens() in the processing
-loop (lines ~1200-2700) with slot.n_input_total (19 replacements total).

@@ -26,8 +26,9 @@ Key changes:
 - `server-task.h/.cpp`: Add `append_to_slot` bool to `task_params`
 - `server-context.cpp`: Add `n_input_total` and `append_tokens` to `server_slot`. On append mode, combine cached + query tokens once in `SLOT_STATE_STARTED`, then use persistent buffer throughout the processing loop. Replace all `slot.task->n_tokens()` with `slot.n_input_total` (19 replacements)
 
-This reduces TTFT from ~6.3s to ~3.8s by eliminating:
+This reduces TTFT from ~6.3s to ~0.53s by eliminating:
 - Network transfer of 1.25M chars
 - Server-side tokenization of 905K tokens (~3s)
+- Server-internal prompt cache update / prefix matching (~3s)
 
-The remaining ~3s is `prompt cache update` (server-internal prefix matching over 905K tokens).
+The patch also skips `prompt_cache->update()` for append requests since prefix matching is unnecessary when appending directly to an existing slot.
