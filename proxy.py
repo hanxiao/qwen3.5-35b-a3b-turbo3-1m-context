@@ -20,11 +20,13 @@ import time
 import socket
 import signal
 import sys
+import re
 
 LLAMA_API = "http://localhost:8080"
 READY = False
 BASE_TOKENS = 0
 SLOT_FILE = "tianlong_clean_905k"
+CORPUS_TOC = ""  # Table of contents extracted from corpus
 
 # GPU queue: only one request at a time
 GPU_LOCK = threading.Semaphore(1)
@@ -57,8 +59,32 @@ def restore_slot():
     result = api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=30)
     return result.get("n_restored", 0)
 
+def extract_toc(corpus_path):
+    """Extract table of contents from corpus file."""
+    try:
+        with open(corpus_path, 'r') as f:
+            text = f.read()
+        chapters = re.findall(r'(第[一二三四五六七八九十百零]+章)\s+(.+?)(?:\n|$)', text)
+        if not chapters:
+            return ""
+        toc = '以下是本书的完整目录：\n'
+        for num, title in chapters:
+            toc += f'{num} {title.strip()}\n'
+        toc += f'共{len(chapters)}章。\n'
+        print(f"Extracted TOC: {len(chapters)} chapters", flush=True)
+        return toc
+    except Exception as e:
+        print(f"TOC extraction failed: {e}", flush=True)
+        return ""
+
 def preload():
-    global READY, BASE_TOKENS
+    global READY, BASE_TOKENS, CORPUS_TOC
+
+    # Extract TOC from corpus
+    corpus_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tianlong_full.txt')
+    if not os.path.exists(corpus_path):
+        corpus_path = '/tmp/tianlong_full.txt'
+    CORPUS_TOC = extract_toc(corpus_path)
 
     try:
         n = restore_slot()
@@ -174,7 +200,9 @@ class Handler(BaseHTTPRequestHandler):
             # Restore clean slot before each request
             restore_slot()
 
-            # Tokenize only the query (not the 905K base)
+            # Inject TOC into query to mitigate lost-in-the-middle
+            if CORPUS_TOC:
+                query = f"{CORPUS_TOC}\n{query}"
             query_text = f"<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
             query_tokens = tokenize(query_text)
 
