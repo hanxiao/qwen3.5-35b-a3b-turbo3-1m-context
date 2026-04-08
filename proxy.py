@@ -302,38 +302,49 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
 
+            resp = None
             try:
-                with urllib.request.urlopen(req, timeout=300) as resp:
-                    buffer = b''
-                    while True:
-                        chunk = resp.read(1024)
-                        if not chunk:
-                            break
-                        buffer += chunk
-                        while b'\n\n' in buffer:
-                            event, buffer = buffer.split(b'\n\n', 1)
-                            for line in event.split(b'\n'):
-                                if line.startswith(b'data: '):
-                                    try:
-                                        data = json.loads(line[6:])
-                                        chat_ev = {"choices": [{"delta": {"content": data.get('content', '')}, "index": 0}]}
-                                        if data.get('stop'):
-                                            chat_ev['usage'] = {
-                                                'prompt_tokens': data.get('tokens_evaluated', 0),
-                                                'completion_tokens': data.get('tokens_predicted', 0),
-                                                'tokens_cached': data.get('tokens_cached', 0)
-                                            }
-                                        self.wfile.write(("data: " + json.dumps(chat_ev) + "\n\n").encode())
-                                        self.wfile.flush()
-                                    except:
-                                        pass
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
+                resp = urllib.request.urlopen(req, timeout=300)
+                buffer = b''
+                while True:
+                    chunk = resp.read(1024)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    while b'\n\n' in buffer:
+                        event, buffer = buffer.split(b'\n\n', 1)
+                        for line in event.split(b'\n'):
+                            if line.startswith(b'data: '):
+                                try:
+                                    data = json.loads(line[6:])
+                                    chat_ev = {"choices": [{"delta": {"content": data.get('content', '')}, "index": 0}]}
+                                    if data.get('stop'):
+                                        chat_ev['usage'] = {
+                                            'prompt_tokens': data.get('tokens_evaluated', 0),
+                                            'completion_tokens': data.get('tokens_predicted', 0),
+                                            'tokens_cached': data.get('tokens_cached', 0)
+                                        }
+                                    self.wfile.write(("data: " + json.dumps(chat_ev) + "\n\n").encode())
+                                    self.wfile.flush()
+                                except (BrokenPipeError, ConnectionResetError):
+                                    raise
+                                except:
+                                    pass
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                if resp:
+                    resp.close()
+                print("Client disconnected, closed upstream connection", flush=True)
             except Exception as e:
                 try:
                     self.wfile.write(f"data: {json.dumps({'error': str(e)})}\n\n".encode())
                 except:
                     pass
+            finally:
+                if resp:
+                    try: resp.close()
+                    except: pass
         finally:
             release_gpu()
 
