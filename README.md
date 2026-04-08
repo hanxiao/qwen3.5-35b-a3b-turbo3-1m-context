@@ -14,7 +14,7 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 | Checkpoints (32 x 62.8 MiB) | 2,010 MiB |
 | **Peak VRAM** | **22,052 MiB / 23,034 MiB (95.7%)** |
 | **Performance** | |
-| Cold prefill (905K tokens) | 221 tok/s (4,112s total) |
+| Cold prefill (905K tokens) | 221 tok/s (69 min) |
 | Slot restore time | 2.6s (905K tokens) |
 | Decode @ 905K context | 8.8 tok/s |
 | TTFT | 0.53s |
