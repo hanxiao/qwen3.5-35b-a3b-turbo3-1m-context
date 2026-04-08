@@ -33,13 +33,6 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 ## Quick Start
 
-### Docker
-
-```bash
-docker build -t qwen-1m .
-docker run --gpus all -p 8080:8080 qwen-1m
-```
-
 ### Manual
 
 ```bash
@@ -64,17 +57,25 @@ GGML_TURBO_DECODE_NATIVE=1 ./build/bin/llama-server \
   -ngl 999 \
   --port 8080 \
   --host 0.0.0.0 \
-  --slot-save-path /tmp/slots \
+  --slot-save-path /home/hanxiao/slots \
   -np 1 \
   -ub 128 \
   --no-warmup \
   --reasoning off
+
+# 4. Generate 1M token KV cache slot (~68 mins)
+# Downloads the corpus and pre-computes the KV cache
+python3 prefill.py
+
+# 5. Start proxy (port 8082)
+# Loads the saved KV cache and handles chat queries
+python3 proxy.py
 ```
 
 **Key parameters:**
 - `GGML_TURBO_DECODE_NATIVE=1`: Use native turbo3 Flash Attention (no KV decompression overhead)
 - `-ctk turbo3 -ctv turbo3`: TurboQuant KV cache (5.12x compression)
-- `--slot-save-path /tmp/slots`: Enable KV cache slot save/restore (65 MB file, 38 ms restore)
+- `--slot-save-path /home/hanxiao/slots`: Enable KV cache slot save/restore (65 MB file, 38 ms restore)
 - `--no-warmup`: Skip warmup prefill (use slot restore instead)
 - `--reasoning off`: Disable thinking output to save tokens
 
