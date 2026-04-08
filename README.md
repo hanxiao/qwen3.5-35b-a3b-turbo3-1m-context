@@ -10,16 +10,17 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 | Model weights (Q3_K_M) | 15,190 MiB |
 | KV cache turbo3 (1M tokens) | 4,000 MiB |
 | Compute buffer (ubatch=128) | 779 MiB |
-| Checkpoints (32 x 62.8 MiB) | ~2,000 MiB |
-| **Peak VRAM** | **22,052 MiB (97.7% of 24GB)** |
+| Recurrent state buffer | 62.8 MiB |
+| Checkpoints (32 x 62.8 MiB) | 2,010 MiB |
+| **Peak VRAM** | **22,052 MiB / 23,034 MiB (95.7%)** |
 | **Performance** | |
-| Cold prefill (905K tokens) | 222 tok/s (~68 min total) |
-| Slot restore time | 2.5s (905K tokens) |
-| Decode @ 905K context | ~9 tok/s |
-| TTFT (Time To First Token) | ~1.9s |
+| Cold prefill (905K tokens) | 221 tok/s (4,091s total) |
+| Slot restore time | 2.3s (905K tokens) |
+| Decode @ 905K context | 9.0 tok/s |
+| TTFT (Time To First Token) | 6.3s (includes 3s server-side tokenization) |
 | **Compression & Quality** | |
 | KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
-| Model quality (Q3_K_M) | 3.5 bpw |
+| Model quality (Q3_K_M) | 3.51 bpw |
 | Thinking output | Disabled (`--reasoning off`) |
 
 ## How It Works
