@@ -4,6 +4,8 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 ## Key Results
 
+**Warning: Never store your compiled `llama-server`, `slot` files, or `corpus` in `/tmp` on GCP or other cloud instances.** A simple instance reset will wipe `/tmp`, forcing you to re-compile the custom fork (15 mins) and re-run the 1M token prefill (68 mins). Always store these in your home directory or a persistent volume.
+
 | Metric | Value |
 |--------|-------|
 | **VRAM Budget** | |

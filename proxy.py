@@ -2,7 +2,12 @@
 """
 Proxy for 1M context KV cache demo.
 Qwen3.5-35B-A3B Q3_K_M + turbo3/turbo3 on L4 24GB.
-Single corpus: tianlong_full.txt (905K tokens, already prefilled).
+Single corpus: tianlong_full.txt (905K tokens, already prefilled and saved as slot).
+
+Architecture:
+- On startup: restore saved slot (905K tokens KV cache, ~2.5s)
+- On each request: send ONLY query tokens + n_keep=BASE_TOKENS
+  llama-server keeps the base 905K KV cache locked in VRAM, only processes query tokens
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -14,13 +19,11 @@ import time
 import socket
 import signal
 import sys
-import re
 
 LLAMA_API = "http://localhost:8080"
 READY = False
-
-ACTIVE_TOKEN_IDS = []
 BASE_TOKENS = 0
+SLOT_FILE = "tianlong_1m_Q3KM_turbo3"
 
 # GPU queue: only one request at a time
 GPU_LOCK = threading.Semaphore(1)
@@ -33,59 +36,6 @@ CORPUS_INFO = {
     "description": "金庸《天龙八部》完整全文 (~905K tokens)",
 }
 
-
-class ThinkingFilter:
-    """Strip <think>...</think> blocks from streaming text."""
-    def __init__(self):
-        self.buffer = ""
-        self.in_thinking = False
-    
-    def filter(self, text):
-        """Process incoming chunk, return filtered output."""
-        if not text:
-            return ""
-        
-        self.buffer += text
-        output = ""
-        
-        # Process buffer until no more complete tags
-        while True:
-            if not self.in_thinking:
-                # Look for opening tag
-                start_match = re.search(r'<think>', self.buffer, re.IGNORECASE)
-                if start_match:
-                    # Output everything before tag
-                    output += self.buffer[:start_match.start()]
-                    self.buffer = self.buffer[start_match.end():]
-                    self.in_thinking = True
-                else:
-                    # No opening tag - keep last 7 chars
-                    if len(self.buffer) > 7:
-                        output += self.buffer[:-7]
-                        self.buffer = self.buffer[-7:]
-                    return output
-            else:
-                # Inside thinking block, look for closing tag
-                end_match = re.search(r'</think>', self.buffer, re.IGNORECASE)
-                if end_match:
-                    # Discard everything up to and including closing tag
-                    self.buffer = self.buffer[end_match.end():]
-                    self.in_thinking = False
-                else:
-                    # No closing tag yet - keep last 8 chars
-                    if len(self.buffer) > 8:
-                        self.buffer = self.buffer[-8:]
-                    return output
-    
-    def flush(self):
-        """Flush remaining buffer at end of stream."""
-        if not self.in_thinking:
-            output = self.buffer
-            self.buffer = ""
-            return output
-        else:
-            self.buffer = ""
-            return ""
 
 def api_call(endpoint, data, timeout=900):
     payload = json.dumps(data).encode()
@@ -102,82 +52,23 @@ def tokenize(text):
     return result["tokens"]
 
 def preload():
-    global READY, ACTIVE_TOKEN_IDS, BASE_TOKENS
-    
-    print("Loading tianlong_full.txt...", flush=True)
-    with open("/tmp/tianlong_full.txt", "r", errors="replace") as f:
-        text = f.read()
-    text = text.encode("utf-8", errors="replace").decode("utf-8")
-    
-    system_instruction = (
-        "\n\n---\n\n"
-        "你是一个关于金庸小说《天龙八部》的问答系统。上面是小说完整全文。"
-        "回答用户关于人物、情节、武功、对话的提问。"
-        "规则:\n"
-        "- 直接回答，不要输出 thinking 过程、不要输出 <think> 标签。\n"
-        "- 引用原文时注明章节。\n"
-        "- 优先直接引用原文。\n"
-        "- 回答简洁准确，不要废话。\n"
-    )
-    base_text = "<|im_start|>system\n" + text + system_instruction + "<|im_end|>\n"
-    
-    print("Tokenizing...", flush=True)
-    t0 = time.time()
-    ACTIVE_TOKEN_IDS = tokenize(base_text)
-    BASE_TOKENS = len(ACTIVE_TOKEN_IDS)
-    print(f"Tokenized: {BASE_TOKENS} tokens in {time.time()-t0:.1f}s", flush=True)
-    
-    # Check if KV cache is already warm (slot has tokens)
+    global READY, BASE_TOKENS
+
+    # Just restore the saved slot - no warm-up, no prefill
     try:
-        slots = json.loads(urllib.request.urlopen(f"{LLAMA_API}/slots", timeout=10).read())
-        n_past = slots[0].get("n_past", 0) if slots else 0
-        if n_past >= BASE_TOKENS - 100:
-            print(f"KV cache already warm: {n_past} tokens in slot", flush=True)
+        result = api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=30)
+        n_restored = result.get("n_restored", 0)
+        if n_restored > 0:
+            BASE_TOKENS = n_restored
+            print(f"Restored slot: {BASE_TOKENS} tokens in KV cache", flush=True)
             READY = True
             return
+        else:
+            print("ERROR: Slot restore returned 0 tokens!", flush=True)
     except Exception as e:
-        print(f"Slots check failed: {e}", flush=True)
-    
-    # Try slot restore
-    try:
-        result = api_call("/slots/0?action=restore", {"filename": "tianlong_1m_Q3KM_turbo3"}, timeout=30)
-        if result.get("n_restored", 0) > 0:
-            print(f"Restored slot cache: {result['n_restored']} entries", flush=True)
-            # Warm the cache with a minimal query to establish prefix
-            print("Warming prefix match...", flush=True)
-            api_call("/completion", {
-                "prompt": ACTIVE_TOKEN_IDS,
-                "n_predict": 1,
-                "temperature": 0.0,
-                "cache_prompt": True
-            }, timeout=1200)
-            print("Cache warm!", flush=True)
-            READY = True
-            return
-    except Exception as e:
-        print(f"Slot restore failed: {e}", flush=True)
-    
-    # Full prefill
-    print(f"Full prefill ({BASE_TOKENS} tokens)... this will take ~18 min", flush=True)
-    result = api_call("/completion", {
-        "prompt": ACTIVE_TOKEN_IDS,
-        "n_predict": 1,
-        "temperature": 0.0,
-        "cache_prompt": True
-    }, timeout=3600)
-    
-    speed = result.get('timings', {}).get('prompt_per_second', 0)
-    print(f"Prefill done: {speed:.1f} tok/s", flush=True)
-    
-    # Save slot
-    try:
-        api_call("/slots/0?action=save", {"filename": "tianlong_1m_Q3KM_turbo3"}, timeout=60)
-        print("Slot saved", flush=True)
-    except Exception as e:
-        print(f"Slot save failed: {e}", flush=True)
-    
-    READY = True
-    print("Ready!", flush=True)
+        print(f"ERROR: Slot restore failed: {e}", flush=True)
+        print("Run full prefill + save slot first, then restart proxy.", flush=True)
+
 
 def try_acquire_gpu(timeout=60):
     global GPU_QUEUE_SIZE
@@ -211,7 +102,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            # Get VRAM usage
             vram = {}
             try:
                 import subprocess
@@ -230,8 +120,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             self.wfile.write(json.dumps(resp).encode())
             return
-        
-        if self.path == "/" or self.path.startswith("/?" ) or self.path == "/index.html":
+
+        if self.path == "/" or self.path.startswith("/?") or self.path == "/index.html":
             try:
                 with open("/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/index.html", "r") as f:
                     html = f.read()
@@ -243,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
             return
-        
+
         self.send_response(404)
         self.end_headers()
 
@@ -258,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Still loading... prefilling 905K tokens (~18 min)"}).encode())
+            self.wfile.write(json.dumps({"error": "Slot not loaded. Check server logs."}).encode())
             return
 
         length = int(self.headers.get("Content-Length", 0))
@@ -276,18 +166,20 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            base_tokens = list(ACTIVE_TOKEN_IDS)
+            # Only send query tokens - base 905K tokens stay locked in KV cache via n_keep
             query_text = f"<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
             query_tokens = tokenize(query_text)
-            full_tokens = base_tokens + query_tokens
 
             payload = json.dumps({
-                "prompt": full_tokens,
+                "prompt": query_tokens,
                 "n_predict": max_tokens,
+                "n_keep": BASE_TOKENS,
                 "temperature": temperature,
                 "stream": True,
                 "cache_prompt": True,
-                "stop": ["<|im_end|>", "<|im_start|>"], "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0
+                "stop": ["<|im_end|>", "<|im_start|>"],
+                "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+                "presence_penalty": 1.5, "repeat_penalty": 1.0
             }).encode()
 
             req = urllib.request.Request(
@@ -295,6 +187,17 @@ class Handler(BaseHTTPRequestHandler):
                 data=payload,
                 headers={"Content-Type": "application/json"}
             )
+
+            # Wait for slot to be free
+            for _wait in range(30):
+                try:
+                    slots = json.loads(urllib.request.urlopen(f"{LLAMA_API}/slots", timeout=5).read())
+                    if not slots[0].get("is_processing", False):
+                        break
+                except:
+                    pass
+                time.sleep(1)
+                print(f"Waiting for slot to free... ({_wait+1}s)", flush=True)
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -304,6 +207,7 @@ class Handler(BaseHTTPRequestHandler):
 
             resp = None
             try:
+                print(f"Query: {query[:50]}... ({len(query_tokens)} tokens, payload {len(payload)} bytes)", flush=True)
                 resp = urllib.request.urlopen(req, timeout=300)
                 buffer = b''
                 while True:
@@ -332,10 +236,11 @@ class Handler(BaseHTTPRequestHandler):
                                     pass
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
+                print("Done", flush=True)
             except (BrokenPipeError, ConnectionResetError):
                 if resp:
                     resp.close()
-                print("Client disconnected, closed upstream connection", flush=True)
+                print("Client disconnected, upstream closed", flush=True)
             except Exception as e:
                 try:
                     self.wfile.write(f"data: {json.dumps({'error': str(e)})}\n\n".encode())
@@ -349,7 +254,8 @@ class Handler(BaseHTTPRequestHandler):
             release_gpu()
 
     def log_message(self, format, *args):
-        pass
+        sys.stderr.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format%args))
+        sys.stderr.flush()
 
     def handle_one_request(self):
         try:
@@ -367,9 +273,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 if __name__ == "__main__":
     sys.stdout = open('/home/hanxiao/qwen3.5-35b-a3b-turbo3-1m-context/proxy.log', 'a', buffering=1)
     sys.stderr = sys.stdout
-    
+
     threading.Thread(target=preload, daemon=True).start()
-    
+
     server = ThreadedHTTPServer(("0.0.0.0", 8082), Handler)
     signal.signal(signal.SIGTERM, lambda *_: (server.shutdown(), sys.exit(0)))
     print(f"Proxy on port 8082 (pid {os.getpid()})", flush=True)
