@@ -23,7 +23,7 @@ import sys
 LLAMA_API = "http://localhost:8080"
 READY = False
 BASE_TOKENS = 0
-ACTIVE_BASE_TEXT = ""
+ACTIVE_TOKEN_IDS = []
 SLOT_FILE = "tianlong_1m_Q3KM_turbo3"
 
 # GPU queue: only one request at a time
@@ -53,9 +53,9 @@ def tokenize(text):
     return result["tokens"]
 
 def preload():
-    global READY, BASE_TOKENS, ACTIVE_BASE_TEXT
+    global READY, BASE_TOKENS, ACTIVE_TOKEN_IDS
 
-    # Load the base text so we can prepend it as a string to every query
+    # Tokenize the base text once on startup
     try:
         with open("tianlong_full.txt", "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -69,17 +69,22 @@ def preload():
             "- 优先直接引用原文。\n"
             "- 回答简洁准确，不要废话。\n"
         )
-        ACTIVE_BASE_TEXT = "<|im_start|>system\n" + text + system_instruction + "<|im_end|>\n"
+        base_text = "<|im_start|>system\n" + text + system_instruction + "<|im_end|>\n"
+        print("Tokenizing base text...", flush=True)
+        t0 = time.time()
+        ACTIVE_TOKEN_IDS = tokenize(base_text)
+        BASE_TOKENS = len(ACTIVE_TOKEN_IDS)
+        print(f"Tokenized: {BASE_TOKENS} tokens in {time.time()-t0:.1f}s", flush=True)
     except Exception as e:
-        print(f"ERROR: Could not load tianlong_full.txt: {e}", flush=True)
+        print(f"ERROR: Could not load/tokenize: {e}", flush=True)
+        return
 
-    # Just restore the saved slot - no warm-up, no prefill
+    # Restore the saved slot
     try:
         result = api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=30)
         n_restored = result.get("n_restored", 0)
         if n_restored > 0:
-            BASE_TOKENS = n_restored
-            print(f"Restored slot: {BASE_TOKENS} tokens in KV cache", flush=True)
+            print(f"Restored slot: {n_restored} tokens in KV cache", flush=True)
             READY = True
             return
         else:
@@ -185,14 +190,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Send full prompt as text string - llama-server tokenizes internally (~3s)
-            # This avoids sending 6.9MB JSON array of 905K token IDs every request
-            # And it uses cache_prompt prefix matching to reuse the 905K KV cache
+            # Restore slot to clean 905K base state before each request
+            # This avoids the hybrid/recurrent model bug where prefix matching
+            # hangs after a previous query modified the cached token sequence
+            api_call("/slots/0?action=restore", {"filename": SLOT_FILE}, timeout=10)
+
             query_text = f"<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
-            full_prompt = ACTIVE_BASE_TEXT + query_text
+            query_tokens = tokenize(query_text)
+            full_tokens = list(ACTIVE_TOKEN_IDS) + query_tokens
 
             payload = json.dumps({
-                "prompt": full_prompt,
+                "prompt": full_tokens,
                 "n_predict": max_tokens,
                 "temperature": temperature,
                 "stream": True,
@@ -227,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
 
             resp = None
             try:
-                print(f"Query: {query[:50]}... (payload {len(payload)} bytes)", flush=True)
+                print(f"Query: {query[:50]}... ({len(query_tokens)} tokens, payload {len(payload)} bytes)", flush=True)
                 resp = urllib.request.urlopen(req, timeout=300)
                 buffer = b''
                 while True:
