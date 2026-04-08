@@ -76,6 +76,24 @@ GGML_TURBO_DECODE_NATIVE=1 ./build/bin/llama-server \
 - `--no-warmup`: Skip warmup prefill (use slot restore instead)
 - `--reasoning off`: Disable thinking output to save tokens
 
+## Optimal Sampling Parameters
+
+Qwen3.5-35B-A3B is prone to repetition loops with default sampling settings. Use these [officially recommended parameters](https://github.com/QwenLM/Qwen3.5/issues/88):
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `temperature` | 0.7 | Non-thinking mode (thinking mode uses 0.6) |
+| `top_p` | 0.8 | |
+| `top_k` | 20 | |
+| `min_p` | 0.0 | |
+| `presence_penalty` | 1.5 | Critical for preventing repetition loops |
+| `repetition_penalty` | 1.0 | No additional repeat penalty needed |
+
+Sources:
+- [Unsloth Qwen3 guide](https://unsloth.ai/docs/models/tutorials/qwen3-how-to-run-and-fine-tune) (thinking: temp=0.6, top_p=0.95, top_k=20)
+- [Qwen3-VL guide](https://unsloth.ai/docs/models/tutorials/qwen3-how-to-run-and-fine-tune/qwen3-vl-how-to-run-and-fine-tune) (presence_penalty=1.5)
+- [QwenLM/Qwen3.5#88](https://github.com/QwenLM/Qwen3.5/issues/88) (community-confirmed)
+
 ## Proxy + UI
 
 The proxy holds document context server-side and prepends it to each query, avoiding the need to send 1M+ tokens from the browser.
