@@ -6,6 +6,10 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 | Metric | Value |
 |--------|-------|
+| **Compression & Quality** | |
+| KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
+| Model quality (Q3_K_M) | 3.51 bpw |
+| Thinking output | Disabled (`--reasoning off`) |
 | **VRAM Budget** | |
 | Model weights (Q3_K_M) | 15,190 MiB |
 | KV cache turbo3 (1M tokens) | 4,000 MiB |
@@ -18,10 +22,6 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 | Slot restore time | 2.6s (905K tokens) |
 | Decode @ 905K context | 8.8 tok/s |
 | TTFT | 0.53s |
-| **Compression & Quality** | |
-| KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
-| Model quality (Q3_K_M) | 3.51 bpw |
-| Thinking output | Disabled (`--reasoning off`) |
 
 ## How It Works
 
