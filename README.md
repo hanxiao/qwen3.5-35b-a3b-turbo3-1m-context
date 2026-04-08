@@ -1,6 +1,6 @@
 # Qwen3.5-35B-A3B 1M Context on L4 24GB
 
-Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB VRAM) using TurboQuant extreme KV cache quantization. Minimum hardware requirements: any GPU with 23+ GB VRAM, CUDA 12.8+, 16GB system RAM, 20GB disk.
+Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB VRAM) using TurboQuant extreme KV cache quantization. Minimum hardware: 1x NVIDIA L4 24GB VRAM, CUDA 12.8, 16GB RAM, 20GB disk.
 
 ## Key Results
 
