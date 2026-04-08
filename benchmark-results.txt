@@ -1,0 +1,53 @@
+# Final Benchmark: Qwen3.5-35B-A3B on L4 24GB, 1M Context
+# Date: 2026-04-04
+# Instance: qwen35-1m-l4-std (136.117.101.139), STANDARD (not spot)
+
+## Configuration
+Model: Qwen3.5-35B-A3B Q3_K_M (15.2 GB, 3.5 bpw)
+Fork: Madreag/spiritbuun turbo3-cuda (native FA)
+KV Cache: turbo3/turbo3 (5.12x compression)
+Context: 1,048,576 tokens (1M)
+Ubatch: 128
+Flash Attention: ON (native turbo3, no decompression)
+Env: GGML_TURBO_DECODE_NATIVE=1
+Slot Save: /tmp/slots/tianlong_1m_Q3KM_turbo3 (65 MB)
+
+## VRAM Budget
+Total: 22,574 MiB (L4 24GB)
+Model: 15,190 MiB
+KV turbo3: 4,000 MiB (1M tokens)
+Compute (ub128): 779 MiB
+Checkpoints: ~2,000 MiB (32 x 62.8 MiB)
+Peak used: 22,052 MiB (97.7% utilization!)
+Free at peak: 522 MiB
+
+## Performance (905K tokens loaded = tianlong_full.txt)
+Cold Prefill (905K): 222 tok/s avg, ~18 min total
+Warm Query Prefill (cache hit): 151-156 tok/s
+Short Prompt Prefill: 141 tok/s
+Decode @ 905K context: 58.2-59.5 tok/s (STABLE!)
+Slot Save: 60 ms (65 MB file)
+Slot Restore: 38 ms
+
+## Quality
+Model: Q3_K_M (3.5 bpw) - best quality that fits
+KV: turbo3 native FA (no decompression quality loss)
+Thinking: enabled (model uses <think> blocks)
+Chinese text comprehension: excellent (see benchmark content)
+
+## Comparison vs Previous Best (910K, IQ2_M+q4_0)
+| Metric | Old (IQ2_M+q4_0) | New (Q3_K_M+turbo3) | Improvement |
+|--------|-------------------|---------------------|-------------|
+| Model quality | IQ2_M (2.7 bpw) | Q3_K_M (3.5 bpw) | +30% quality |
+| Context | 910K | 1,048,576 (1M) | +15% |
+| Decode | ~5 tok/s | 58 tok/s | 11.6x faster |
+| KV cache | q4_0 (8 GB) | turbo3 (4 GB) | 2x smaller |
+| Slot save | 3.9 GB | 65 MB | 60x smaller |
+| VRAM util | ~96% | 97.7% | maxed out |
+
+## Server Command
+GGML_TURBO_DECODE_NATIVE=1 /tmp/turbo3-cuda/build/bin/llama-server \
+  -m /home/hanxiao/models/Qwen3.5-35B-A3B-Q3_K_M.gguf \
+  -c 1048576 -ctk turbo3 -ctv turbo3 \
+  -fa on -ngl 999 --port 8080 \
+  --slot-save-path /tmp/slots -np 1 -ub 128 --no-warmup

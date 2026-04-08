@@ -1,0 +1,20 @@
+# Useful Strategies for Qwen3.5-35B-A3B on L4 24GB (1M Context)
+# Format: strategy | why it works
+
+Madreag/spiritbuun fork turbo3 native FA | Flash attention directly computes on turbo3 KV without decompressing to fp16, eliminating ~1.7GB temp buffer that caused Q3_K_M OOM
+GGML_TURBO_DECODE_NATIVE=1 env var | Disables decode-time turbo3->fp16 decompression, eliminates context-scaling temp buffer for MoE models (line 823 in fattn code)
+turbo3/turbo3 KV cache | 5.12x compression, 1M context KV = only 4000 MiB (vs ~20GB at fp16), makes 1M possible
+Q3_K_M model (15.2GB, 3.5 bpw) | Best quality-to-size ratio that fits L4 with 1M turbo3 KV. Q4_K_M (19.7GB) too big for 1M
+ubatch=128 | Sweet spot for prefill speed vs VRAM. ubatch=2 compute=12MiB but 136 tok/s; ubatch=128 compute=~750MiB but ~820 tok/s (6x faster)
+-np 1 (single slot) | Minimizes KV cache overhead, all VRAM goes to one context
+--no-warmup | Skips warmup compute buffer allocation that would waste time
+context checkpoint system | Auto-creates checkpoints every 8192 tokens, enables cache reuse for subsequent queries (373ms warm vs 18min cold)
+Recurrent model KV cache fix (4 patches) | pos_min_thold=0, position-matching checkpoint search, preserve n_past, fixes #20225 for Qwen3.5 hybrid arch
+--slot-save-path /tmp/slots | Enables persistent slot saves to disk, survives server restart
+ctx=1048576 with Q3_K_M+turbo3 | Fits! Model 15.2GB + KV 4GB + compute 0.75GB = ~20GB, leaving 2.3GB headroom
+Mixed KV (K=turbo3, V=q4_0) | Halves the flash-attn temp buffer (only K needs decompression). Useful if native FA not available
+ubatch=128 for 256K context | Discovered: reduces compute buffer ~400MB, saved 27B Dense from OOM at 71K
+TheTom/llama-cpp-turboquant fork | Has all spiritbuun CUDA optimizations + block_size=128 (5.12x compression) + turbo4 prefill opts + norm correction. Upstream alternative to Madreag fork
+Sparse V dequant optimization | Skips V dequant for softmax attn weights < 1e-6. At long context 90%+ negligible. Metal implementation gives +22.8% decode at 32K
+4-mag LUT (Metal) | Reduces constant memory addresses from 8 to 4 during K dequant. +38% decode on M2 Pro at 8K. Auto-enabled on Metal
+Checkpoint system (every 8192 tokens) | Creates 32 checkpoints during prefill (62.8 MiB each, ~2GB total). Enables cache reuse: 373ms warm query vs 18min cold prefill
