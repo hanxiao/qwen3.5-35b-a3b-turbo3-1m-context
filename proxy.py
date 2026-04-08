@@ -23,6 +23,7 @@ import sys
 LLAMA_API = "http://localhost:8080"
 READY = False
 BASE_TOKENS = 0
+ACTIVE_BASE_TEXT = ""
 SLOT_FILE = "tianlong_1m_Q3KM_turbo3"
 
 # GPU queue: only one request at a time
@@ -52,7 +53,25 @@ def tokenize(text):
     return result["tokens"]
 
 def preload():
-    global READY, BASE_TOKENS
+    global READY, BASE_TOKENS, ACTIVE_BASE_TEXT
+
+    # Load the base text so we can prepend it as a string to every query
+    try:
+        with open("tianlong_full.txt", "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        system_instruction = (
+            "\n\n---\n\n"
+            "你是一个关于金庸小说《天龙八部》的问答系统。上面是小说完整全文。"
+            "回答用户关于人物、情节、武功、对话的提问。"
+            "规则:\n"
+            "- 直接回答，不要输出 thinking 过程、不要输出 <think> 标签。\n"
+            "- 引用原文时注明章节。\n"
+            "- 优先直接引用原文。\n"
+            "- 回答简洁准确，不要废话。\n"
+        )
+        ACTIVE_BASE_TEXT = "<|im_start|>system\n" + text + system_instruction + "<|im_end|>\n"
+    except Exception as e:
+        print(f"ERROR: Could not load tianlong_full.txt: {e}", flush=True)
 
     # Just restore the saved slot - no warm-up, no prefill
     try:
@@ -166,14 +185,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Only send query tokens - base 905K tokens stay locked in KV cache via n_keep
+            # Send full prompt as text string - llama-server tokenizes internally (~3s)
+            # This avoids sending 6.9MB JSON array of 905K token IDs every request
+            # And it uses cache_prompt prefix matching to reuse the 905K KV cache
             query_text = f"<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
-            query_tokens = tokenize(query_text)
+            full_prompt = ACTIVE_BASE_TEXT + query_text
 
             payload = json.dumps({
-                "prompt": query_tokens,
+                "prompt": full_prompt,
                 "n_predict": max_tokens,
-                "n_keep": BASE_TOKENS,
                 "temperature": temperature,
                 "stream": True,
                 "cache_prompt": True,
@@ -207,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
 
             resp = None
             try:
-                print(f"Query: {query[:50]}... ({len(query_tokens)} tokens, payload {len(payload)} bytes)", flush=True)
+                print(f"Query: {query[:50]}... (payload {len(payload)} bytes)", flush=True)
                 resp = urllib.request.urlopen(req, timeout=300)
                 buffer = b''
                 while True:
