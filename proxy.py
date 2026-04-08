@@ -186,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                 "cache_prompt": True,
                 "append_to_slot": True,
                 "stop": ["<|im_end|>", "<|im_start|>"],
-                "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+                "top_p": 0.9, "top_k": 0, "min_p": 0.05,
                 "presence_penalty": 1.5, "repeat_penalty": 1.0
             }).encode()
 
