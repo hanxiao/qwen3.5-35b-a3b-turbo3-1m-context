@@ -4,8 +4,10 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 ## Key Results
 
-| KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
+| Full context length | 1,048,576 tokens (1M) |
 |--------|-------|
+| Prefilled context length | 904,949 tokens (86.3%) |
+| KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
 | Model quality (Q3_K_M) | 3.51 bpw |
 | Thinking output | Disabled (`--reasoning off`) |
 | Model weights (Q3_K_M) | 15,190 MiB |
