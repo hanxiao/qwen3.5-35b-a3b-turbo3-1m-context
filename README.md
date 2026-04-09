@@ -8,10 +8,10 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 |--------|-------|
 | Prefilled context length | 904,949 tokens (86.3%) |
 | KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
-| Model quality (Q3_K_M) | 3.51 bpw |
+| Model quantization | Q3_K_M (3.51 bpw) |
 | Thinking output | Disabled (`--reasoning off`) |
-| Model weights (Q3_K_M) | 15,190 MiB |
-| KV cache turbo3 (1M tokens) | 4,000 MiB |
+| Model weights | 15,190 MiB |
+| KV cache turbo3 | 4,000 MiB |
 | Compute buffer (ubatch=128) | 779 MiB |
 | Recurrent state buffer | 62.8 MiB |
 | Checkpoints (32 x 62.8 MiB) | 2,010 MiB |
