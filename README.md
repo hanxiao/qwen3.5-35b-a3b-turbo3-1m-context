@@ -23,7 +23,7 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 1. **Model quantization**: Q3_K_M (3-bit weights, 3.51 bpw) reduces model from 20GB to 15.2GB
 2. **TurboQuant KV cache**: turbo3 compresses KV cache from 23GB (fp16) to 4GB for 1M tokens (5.12x compression)
-3. **Native turbo3 Flash Attention**: Madreag/spiritbuun fork computes attention directly on turbo3 KV without decompressing to fp16, eliminating a ~1.7GB temporary buffer that would cause OOM. Enabled via `GGML_TURBO_DECODE_NATIVE=1`
+3. **Native turbo3 Flash Attention**: [Madreag/turbo3-cuda](https://github.com/Madreag/turbo3-cuda) fork computes attention directly on turbo3 KV without decompressing to fp16, eliminating a ~1.7GB temporary buffer that would cause OOM. Enabled via `GGML_TURBO_DECODE_NATIVE=1`
 4. **YaRN RoPE scaling**: Extends 262K training context to 1M via position interpolation
 5. **Low ubatch**: ubatch=128 reduces compute buffer from 3GB to 779MB
 6. **Slot save/restore**: One-time 68-minute prefill saved to disk (3.5GB slot file). Subsequent restores take 2.3s
