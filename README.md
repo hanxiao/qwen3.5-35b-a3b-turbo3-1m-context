@@ -2,6 +2,8 @@
 
 Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB VRAM) using TurboQuant extreme KV cache quantization. Minimum hardware: 1x NVIDIA L4 24GB VRAM, CUDA 12.8, 16GB RAM, 20GB disk.
 
+![Demo](040826-2x.gif)
+
 ## Key Results
 
 | Full context length | 1,048,576 tokens (1M) |
