@@ -4,7 +4,7 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 
 ## Key Results
 
-| Metric | Value |
+| | |
 |--------|-------|
 | **Compression & Quality** | |
 | KV compression vs fp16 | 5.12x (turbo3 = 3.25 bits/val) |
