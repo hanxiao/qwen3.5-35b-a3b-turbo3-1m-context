@@ -35,7 +35,6 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 8. **Fallback: text prompt + prefix matching**: Alternatively, the full document can be sent as text. llama-server tokenizes internally (~3s) and uses `cache_prompt` to match against the 905K tokens already in VRAM, only evaluating the new query tokens
 9. **Hybrid/recurrent model patches**: Qwen3.5 uses a hybrid attention+recurrent architecture requiring patches for correct KV cache truncation and slot restore ([ggml-org/llama.cpp#20225](https://github.com/ggml-org/llama.cpp/pull/20225))
 10. **Context checkpoints**: 32 checkpoints created every 8,192 tokens during prefill (62.8 MiB each), enabling efficient cache reuse
-11. **TOC injection (lost-in-the-middle mitigation)**: At 905K context depth, YaRN 4x extrapolation causes U-shaped attention bias where middle tokens receive weaker attention. The proxy extracts a table of contents (chapter headings) from the corpus and injects it into every query. Since query tokens sit at the end of the KV cache (highest attention zone), the model can reliably reference the full document structure even when middle content is partially degraded. This eliminates repetition loops and fabricated content in enumeration tasks
 
 ## Quick Start
 
