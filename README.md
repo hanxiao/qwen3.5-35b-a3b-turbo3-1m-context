@@ -30,7 +30,6 @@ Run Qwen3.5-35B-A3B with **1 million token context** on a single NVIDIA L4 (24GB
 7. **`append_to_slot` mode**: Query tokens are appended directly to the cached KV state without resending the 905K base tokens. Eliminates network transfer and tokenization overhead. Requires a patched llama-server (see `patches/append-to-slot.patch`)
 8. **Fallback: text prompt + prefix matching**: Alternatively, the full document can be sent as text. llama-server tokenizes internally (~3s) and uses `cache_prompt` to match against the 905K tokens already in VRAM, only evaluating the new query tokens
 9. **Hybrid/recurrent model patches**: Qwen3.5 uses a hybrid attention+recurrent architecture requiring patches for correct KV cache truncation and slot restore ([ggml-org/llama.cpp#20225](https://github.com/ggml-org/llama.cpp/pull/20225))
-10. **Context checkpoints**: 32 checkpoints created every 8,192 tokens during prefill (62.8 MiB each), enabling efficient cache reuse
 
 ## Quick Start
 
